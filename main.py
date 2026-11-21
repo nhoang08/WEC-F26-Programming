@@ -1,12 +1,23 @@
 import json
 import socket
 import sys
+import traceback
+
+# Anything accidentally printed goes to stderr, never to stdout.
+sys.stdout = sys.stderr
 
 HOURS = 24
 MAX_BATTERY = 100
 MAX_SOLAR = 200
-GEN_COST = 1.0              
-RECHARGE_SAME_HOUR = True 
+GEN_COST = 1.0
+RECHARGE_SAME_HOUR = True
+
+
+def num(value, default=0):
+    """Return value if it is a real number, otherwise default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return value
 
 
 class Battery:
@@ -16,6 +27,7 @@ class Battery:
 
     def update(self, charge, discharge):
         self.level += charge - discharge
+        self.level = max(0, min(self.capacity, self.level))
 
 
 class Connection:
@@ -57,15 +69,36 @@ class Controller:
         self.battery = Battery(MAX_BATTERY)
 
     def decide(self, data, hour):
+        """Never raises: on any problem, send a plain grid-only reply."""
+        try:
+            return self._decide(data, hour)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            return self.safe_reply(data)
+
+    def safe_reply(self, data):
+        event = str(data.get("random_event", "none")) if isinstance(data, dict) else "none"
+        grid_ok = "grid_failure" not in event
+        loads = (data.get("loads") if isinstance(data, dict) else None) or []
+        buildings = []
+        for b in loads:
+            load = num(b.get("load")) if isinstance(b, dict) else 0
+            buildings.append({"solar": 0, "battery": 0,
+                              "grid": load if grid_ok else 0})
+        return {"generator": 0, "buildings": buildings}
+
+    def _decide(self, data, hour):
         event = str(data.get("random_event", "none"))
-        forecast = data["forecast"]
-        price = data["grid_price"]
-        loads = data["loads"]
+        price = num(data.get("grid_price"), 0)
+        loads = [
+            {"load": num(b.get("load")), "type": b.get("type")}
+            for b in (data.get("loads") or [])
+        ]
         allocation = {
-            "generator":0,
-            "buildings" : []
+            "generator": 0,
+            "buildings": []
         }
-        #check if there is a random event
+        # check if there is a random event
         solar_ok = "cloudy_weather" not in event
         gen_ok = "generator_failure" not in event
         batt_ok = "battery_failure" not in event
@@ -99,12 +132,12 @@ class Controller:
 
         discharge = 0
         if not grid_ok or last_hour or (can_charge and RECHARGE_SAME_HOUR and price > GEN_COST):
-            discharge = min(level, residual_total)
+            discharge = max(0, min(level, residual_total))
 
         charge = 0
         if can_charge:
             kept = level - discharge if RECHARGE_SAME_HOUR else level
-            charge = self.battery.capacity - kept
+            charge = max(0, self.battery.capacity - kept)
         return discharge, charge
 
     def assign_battery_and_grid(self, solar, residual, discharge, grid_ok):
@@ -114,8 +147,8 @@ class Controller:
         for i in sorted(range(len(residual)), key=lambda k: residual[k]):
             used[i] = min(residual[i], left)
             left -= used[i]
-        return [{"solar" : solar[i], "battery" : used[i],
-                 "grid" : residual[i] - used[i] if grid_ok else 0}
+        return [{"solar": solar[i], "battery": used[i],
+                 "grid": residual[i] - used[i] if grid_ok else 0}
                 for i in range(len(residual))]
 
 
