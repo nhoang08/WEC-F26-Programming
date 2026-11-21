@@ -11,8 +11,15 @@ with socket.create_connection(("localhost", 8800), timeout=30) as client:
         line = stream.readline()
         if not line:
             break
-        print(line.decode("utf-8").strip(), flush=True)  # raw data
-        msg = json.loads(line.decode("utf-8"))
+
+        line_str = line.decode("utf-8").strip()
+        if not line_str:
+            continue
+
+        try:
+            msg = json.loads(line_str)
+        except json.JSONDecodeError:
+            continue
 
         event = str(msg.get("random_event", "none"))
         grid_ok = "grid_failure" not in event
