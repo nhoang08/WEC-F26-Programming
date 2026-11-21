@@ -1,12 +1,12 @@
 import json
 import socket
+import sys
 
 HOURS = 24
 MAX_BATTERY = 100
 MAX_SOLAR = 200
-GEN_COST = 1.0              #TODO: confirm against the spec
-RECHARGE_SAME_HOUR = True   #can the generator refill the battery in the same hour?
-hour = 0
+GEN_COST = 1.0              
+RECHARGE_SAME_HOUR = True 
 
 
 class Battery:
@@ -18,12 +18,46 @@ class Battery:
         self.level += charge - discharge
 
 
+class Connection:
+    """JSON messages over a socket, with or without newlines between them."""
+
+    def __init__(self, host, port):
+        self.client = socket.create_connection((host, port))
+        self.buf = ""
+        self.decoder = json.JSONDecoder()
+
+    def receive(self):
+        """Return the next message as a dict, or None if the server closed."""
+        while True:
+            text = self.buf.lstrip()
+            if text:
+                try:
+                    msg, end = self.decoder.raw_decode(text)
+                    self.buf = text[end:]
+                    return msg
+                except json.JSONDecodeError:
+                    pass  # incomplete message, read more
+            chunk = self.client.recv(65536)
+            if not chunk:
+                return None
+            self.buf += chunk.decode("utf-8")
+
+    def send(self, allocation):
+        self.client.sendall((json.dumps(allocation) + "\n").encode("utf-8"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.client.close()
+
+
 class Controller:
     def __init__(self):
         self.battery = Battery(MAX_BATTERY)
 
     def decide(self, data, hour):
-        event = data["random_event"]
+        event = str(data.get("random_event", "none"))
         forecast = data["forecast"]
         price = data["grid_price"]
         loads = data["loads"]
@@ -32,10 +66,10 @@ class Controller:
             "buildings" : []
         }
         #check if there is a random event
-        solar_ok = event != "cloudy_weather"
-        gen_ok = event != "generator_failure"
-        batt_ok = event != "battery_failure"
-        grid_ok = event != "grid_failure"
+        solar_ok = "cloudy_weather" not in event
+        gen_ok = "generator_failure" not in event
+        batt_ok = "battery_failure" not in event
+        grid_ok = "grid_failure" not in event
 
         solar = self.assign_solar(loads, solar_ok)
         residual = [b["load"] - s for b, s in zip(loads, solar)]
@@ -84,15 +118,12 @@ class Controller:
                  "grid" : residual[i] - used[i] if grid_ok else 0}
                 for i in range(len(residual))]
 
+
 controller = Controller()
-with socket.create_connection(("localhost", 8800), timeout=5) as client:
-    stream = client.makefile("rwb")
-    while hour < HOURS:
-        line = stream.readline()
-        if not line:
+with Connection("localhost", 8800) as connection:
+    for hour in range(HOURS):
+        data = connection.receive()
+        if data is None:
             break
-        data = json.loads(line.decode("utf-8"))
-        allocation = controller.decide(data, hour)
-        stream.write((json.dumps(allocation) + "\n").encode("utf-8"))
-        stream.flush()
-        hour += 1
+        print(hour, json.dumps(data), file=sys.stderr)
+        connection.send(controller.decide(data, hour))
