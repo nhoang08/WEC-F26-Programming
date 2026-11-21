@@ -1,25 +1,37 @@
 import socket
 import json
+import sys
 
+HOURS = 24
 battery = 0
 pending = 0
+buf = ""
+decoder = json.JSONDecoder()
 
-with socket.create_connection(("localhost", 8800), timeout=30) as client:
-    stream = client.makefile("rwb")
 
+def read_msg(client):
+    global buf
     while True:
-        line = stream.readline()
-        if not line:
+        text = buf.lstrip()
+        if text:
+            try:
+                obj, end = decoder.raw_decode(text)
+                buf = text[end:]
+                return obj
+            except json.JSONDecodeError:
+                pass
+        chunk = client.recv(65536)
+        if not chunk:
+            return None
+        buf += chunk.decode("utf-8")
+
+
+with socket.create_connection(("localhost", 8800)) as client:
+    for hour in range(HOURS):
+        msg = read_msg(client)
+        if msg is None:
             break
-
-        line_str = line.decode("utf-8").strip()
-        if not line_str:
-            continue
-
-        try:
-            msg = json.loads(line_str)
-        except json.JSONDecodeError:
-            continue
+        print(hour, json.dumps(msg), file=sys.stderr)
 
         event = str(msg.get("random_event", "none"))
         grid_ok = "grid_failure" not in event
@@ -49,5 +61,4 @@ with socket.create_connection(("localhost", 8800), timeout=30) as client:
         pending = gen
 
         reply = {"buildings": buildings, "generator": gen}
-        stream.write((json.dumps(reply) + "\n").encode("utf-8"))
-        stream.flush()
+        client.sendall((json.dumps(reply) + "\n").encode("utf-8"))
