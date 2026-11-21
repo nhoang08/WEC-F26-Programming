@@ -25,10 +25,31 @@ class Controller:
         batt_ok = event != "battery_failure"
         grid_ok = event != "grid_failure"
 
-        #baseline: buy everything from the grid
-        for i in loads:
-            allocation["buildings"].append({"solar" : 0, "battery" : 0, "grid" : i["load"]})
+        solar = self.assign_solar(loads, solar_ok)
+        residual = [b["load"] - s for b, s in zip(loads, solar)]
+        allocation["buildings"] = self.assign_battery_and_grid(solar, residual, 0, grid_ok)
         return allocation
+
+    def assign_solar(self, loads, solar_ok):
+        """Solar is free: fill non-lecture-hall buildings, smallest load first."""
+        solar = [0] * len(loads)
+        left = MAX_SOLAR if solar_ok else 0
+        for i in sorted(range(len(loads)), key=lambda k: loads[k]["load"]):
+            if loads[i]["type"] != "lecture_hall":
+                solar[i] = min(loads[i]["load"], left)
+                left -= solar[i]
+        return solar
+
+    def assign_battery_and_grid(self, solar, residual, discharge, grid_ok):
+        """Split what solar couldn't cover between the battery and the grid."""
+        used = [0] * len(residual)
+        left = discharge
+        for i in sorted(range(len(residual)), key=lambda k: residual[k]):
+            used[i] = min(residual[i], left)
+            left -= used[i]
+        return [{"solar" : solar[i], "battery" : used[i],
+                 "grid" : residual[i] - used[i] if grid_ok else 0}
+                for i in range(len(residual))]
 
 controller = Controller()
 with socket.create_connection(("localhost", 8800), timeout=5) as client:
