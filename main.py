@@ -1,11 +1,6 @@
 import json
 import socket
 
-with socket.create_connection(("localhost", 8800), timeout=5) as client:
-    stream = client.makefile("rwb")
-    line = stream.readline()
-    data = json.loads(line.decode("utf-8"))
-
 MAX_BATTERY = 100
 MAX_SOLAR = 200
 battery = 0
@@ -16,7 +11,7 @@ def decide(data):
     event = data["random_event"]
     forecast = data["forecast"]
     price = data["grid_price"]
-    loads = data["loads"] 
+    loads = data["loads"]
     allocation = {
         "generator":0,
         "buildings" : []
@@ -36,15 +31,19 @@ def decide(data):
         if(i["type"] != "lecture_hall"):
             total_solar_load += i["load"]
 
-    #check if there is enough solar power to meet the load
-    if solar_ok and total_solar_load <= MAX_SOLAR:
-        for i in loads:
-            if i["type"] == "lecture_hall":
-                #TODO: allocate other power to lecture hall
-            else:
-                allocation["buildings"].append{"solar" : i["load"], "battery" : 0, "gride" : 0}
-        if battery < MAX_BATTERY:
-            allocation["generator"] = MAX_BATTERY - battery
-            battery = MAX_BATTERY
-    return allocation;
+    #baseline: buy everything from the grid
+    for i in loads:
+        allocation["buildings"].append({"solar" : 0, "battery" : 0, "grid" : i["load"]})
+    return allocation
 
+with socket.create_connection(("localhost", 8800), timeout=5) as client:
+    stream = client.makefile("rwb")
+    while hour < 24:
+        line = stream.readline()
+        if not line:
+            break
+        data = json.loads(line.decode("utf-8"))
+        allocation = decide(data)
+        stream.write((json.dumps(allocation) + "\n").encode("utf-8"))
+        stream.flush()
+        hour += 1
